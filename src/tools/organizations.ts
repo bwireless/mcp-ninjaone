@@ -1,130 +1,189 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { NinjaOneClient } from "../ninjaone-client.js";
+import type { NinjaOneClient } from "../ninjaone-client.js";
+import { errorResult, jsonResult } from "./util.js";
 
-function toolResult(text: string, isError = false) {
-  return { content: [{ type: "text" as const, text }], isError };
+const organizationId = z.number().int().positive().describe("NinjaOne organization ID");
+const READ_ONLY = { readOnlyHint: true, openWorldHint: true } as const;
+
+interface OrgPolicyAssignment {
+  nodeRoleId?: number;
+  policyId?: number;
 }
 
-export function registerOrganizationTools(
-  server: McpServer,
-  client: NinjaOneClient,
-) {
-  // ── List Organizations ───────────────────────────────────────────────
-  server.tool(
+interface Policy {
+  id: number;
+  name?: string;
+  nodeClass?: string;
+}
+
+export function registerOrganizationTools(server: McpServer, client: NinjaOneClient) {
+  server.registerTool(
     "list_organizations",
-    "List all organizations (clients/customers) in NinjaOne. Returns organization ID, name, description, and node count.",
     {
-      page_size: z
-        .number()
-        .optional()
-        .default(100)
-        .describe("Number of organizations to return per page"),
-      after: z
-        .number()
-        .optional()
-        .describe("Organization ID cursor for pagination"),
+      title: "List organizations",
+      description:
+        "List organizations (clients/customers) in NinjaOne with their ID, name, and description. Paginate by passing the last organization ID returned as `after`.",
+      inputSchema: {
+        page_size: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .optional()
+          .default(100)
+          .describe("Number of organizations to return"),
+        after: z
+          .number()
+          .int()
+          .optional()
+          .describe("Return organizations with an ID greater than this (pagination cursor)"),
+        filter: z
+          .string()
+          .optional()
+          .describe("Organization filter (of) expression"),
+      },
+      annotations: READ_ONLY,
     },
-    async ({ page_size, after }) => {
-      const params: Record<string, string> = {
-        pageSize: String(page_size),
-      };
-      if (after !== undefined) params.after = String(after);
-
+    async ({ page_size, after, filter }) => {
       try {
-        const results = await client.get("/organizations", params);
-        return toolResult(JSON.stringify(results, null, 2));
-      } catch (error) {
-        return toolResult(
-          `Error listing organizations: ${error}`,
-          true,
+        return jsonResult(
+          await client.get("/organizations", { pageSize: page_size, after, of: filter }),
         );
+      } catch (error) {
+        return errorResult("listing organizations", error);
       }
     },
   );
 
-  // ── Get Organization ─────────────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "get_organization",
-    "Get detailed information about a specific organization by its ID, including contact info, tags, and policy assignments.",
     {
-      organization_id: z.number().describe("NinjaOne organization ID"),
+      title: "Get organization",
+      description:
+        "Get detailed information about an organization, including locations, node approval mode, policy assignments, and settings.",
+      inputSchema: { organization_id: organizationId },
+      annotations: READ_ONLY,
     },
     async ({ organization_id }) => {
       try {
-        const result = await client.get(`/organization/${organization_id}`);
-        return toolResult(JSON.stringify(result, null, 2));
+        return jsonResult(await client.get(`/organization/${organization_id}`));
       } catch (error) {
-        return toolResult(
-          `Error fetching organization: ${error}`,
-          true,
-        );
+        return errorResult("fetching organization", error);
       }
     },
   );
 
-  // ── List Organization Devices ────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "list_organization_devices",
-    "List all devices belonging to a specific organization.",
     {
-      organization_id: z.number().describe("NinjaOne organization ID"),
+      title: "List organization devices",
+      description: "List devices belonging to a specific organization.",
+      inputSchema: {
+        organization_id: organizationId,
+        page_size: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .optional()
+          .default(100)
+          .describe("Number of devices to return"),
+        after: z
+          .number()
+          .int()
+          .optional()
+          .describe("Return devices with an ID greater than this (pagination cursor)"),
+      },
+      annotations: READ_ONLY,
     },
-    async ({ organization_id }) => {
+    async ({ organization_id, page_size, after }) => {
       try {
-        const results = await client.get(
-          `/organization/${organization_id}/devices`,
+        return jsonResult(
+          await client.get(`/organization/${organization_id}/devices`, {
+            pageSize: page_size,
+            after,
+          }),
         );
-        return toolResult(JSON.stringify(results, null, 2));
       } catch (error) {
-        return toolResult(
-          `Error listing organization devices: ${error}`,
-          true,
-        );
+        return errorResult("listing organization devices", error);
       }
     },
   );
 
-  // ── Get Organization Locations ───────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "get_organization_locations",
-    "Get the locations configured for a specific organization.",
     {
-      organization_id: z.number().describe("NinjaOne organization ID"),
+      title: "Get organization locations",
+      description: "Get the locations configured for an organization.",
+      inputSchema: { organization_id: organizationId },
+      annotations: READ_ONLY,
     },
     async ({ organization_id }) => {
       try {
-        const results = await client.get(
-          `/organization/${organization_id}/locations`,
-        );
-        return toolResult(JSON.stringify(results, null, 2));
+        return jsonResult(await client.get(`/organization/${organization_id}/locations`));
       } catch (error) {
-        return toolResult(
-          `Error fetching organization locations: ${error}`,
-          true,
-        );
+        return errorResult("fetching organization locations", error);
       }
     },
   );
 
-  // ── Get Organization Policies ────────────────────────────────────────
-  server.tool(
+  server.registerTool(
     "get_organization_policies",
-    "Get the policy assignments for a specific organization.",
     {
-      organization_id: z.number().describe("NinjaOne organization ID"),
+      title: "Get organization policies",
+      description:
+        "Get the policy assignments for an organization (which policy applies to each device role), with policy names resolved.",
+      inputSchema: { organization_id: organizationId },
+      annotations: READ_ONLY,
     },
     async ({ organization_id }) => {
       try {
-        const results = await client.get(
-          `/organization/${organization_id}/policies`,
-        );
-        return toolResult(JSON.stringify(results, null, 2));
+        const org = (await client.get(`/organization/${organization_id}`)) as {
+          id?: number;
+          name?: string;
+          policies?: OrgPolicyAssignment[];
+        };
+        const assignments = org?.policies ?? [];
+
+        // Best effort: resolve policy names. Ignore failures (e.g. missing scope).
+        let byId = new Map<number, Policy>();
+        try {
+          const policies = (await client.get("/policies")) as Policy[];
+          byId = new Map(policies.map((p) => [p.id, p]));
+        } catch {
+          /* names are optional */
+        }
+
+        return jsonResult({
+          organizationId: org?.id ?? organization_id,
+          organizationName: org?.name,
+          policies: assignments.map((a) => ({
+            ...a,
+            policyName: a.policyId !== undefined ? byId.get(a.policyId)?.name : undefined,
+            nodeClass: a.policyId !== undefined ? byId.get(a.policyId)?.nodeClass : undefined,
+          })),
+        });
       } catch (error) {
-        return toolResult(
-          `Error fetching organization policies: ${error}`,
-          true,
-        );
+        return errorResult("fetching organization policies", error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "list_policies",
+    {
+      title: "List policies",
+      description:
+        "List all policies defined in NinjaOne (ID, name, description, node class, parent policy). Alert conditions are configured within policies.",
+      inputSchema: {},
+      annotations: READ_ONLY,
+    },
+    async () => {
+      try {
+        return jsonResult(await client.get("/policies"));
+      } catch (error) {
+        return errorResult("listing policies", error);
       }
     },
   );
